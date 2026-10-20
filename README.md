@@ -15,7 +15,8 @@ you   →  mic → [PTT F8 | VAD] → [ASR es] → [MT es→en] → [TTS] → vi
 
 Runs on **Windows 10/11** (WASAPI + VB-CABLE) and **Linux** (PipeWire/Wayland, validated on
 Manjaro + KDE Plasma). It **auto-configures the models and precision to your hardware** — see
-[Hardware auto-config](#hardware-auto-config).
+[Hardware auto-config](#hardware-auto-config). An **experimental macOS 14.2+ port** is
+available; live audio and latency validation are still pending (see the macOS section).
 
 ---
 
@@ -37,6 +38,90 @@ Manjaro + KDE Plasma). It **auto-configures the models and precision to your har
 ---
 
 ## Quick start
+
+### macOS 14.2+ (experimental, Intel / Apple Silicon)
+
+The implementation and Intel CPU model baseline are available. **Live capture, self-exclusion,
+BlackHole, cloned-voice latency and full-screen Spaces behavior have not yet been validated.**
+See [macOS reconnaissance and measured p50/p95](docs/porting/macos-recon.md). No M4 latency
+claim is made. Per-app ducking currently reports unavailable; lower call volume in its app.
+
+Install Xcode Command Line Tools (`xcode-select --install`), Python 3.11 via uv, and
+[BlackHole 2ch](https://github.com/ExistentialAudio/BlackHole). With Homebrew available:
+
+```sh
+brew install uv
+brew install --cask blackhole-2ch   # audio driver; administrator approval may be required
+uv sync --extra ui
+.venv/bin/python scripts/fetch_models.py --skip-refiner
+.venv/bin/python -m voztrad detect
+.venv/bin/python -m voztrad app
+```
+
+Use **headphones as the macOS default output and Teams/Meet/Zoom speaker**, your physical
+microphone for voztrad, and **BlackHole 2ch as the call app microphone**. Keep the call app
+microphone muted until its translated virtual-mic path is verified. Restart audio apps after
+driver installation. Do not select BlackHole as the default speaker: the Spanish translation
+must go to headphones, not into the outgoing English virtual microphone.
+
+In **System Settings → Privacy & Security**, allow the app hosting Python (Terminal or your
+launcher, depending on how it was started):
+
+- **Microphone** for recording your speech.
+- **Screen & System Audio Recording** for call capture (the OS permission label varies by version).
+- **Accessibility / Input Monitoring** for global PTT. Restart after granting permissions.
+  The overlay PTT button remains available without the global key. If F8 controls media,
+  use Fn+F8 or enable standard function keys in Keyboard settings.
+
+First capture compiles the native bridge into ignored `out/native/`. Process Taps are the
+provisional default. Compare ScreenCaptureKit using `VOZTRAD_MAC_CAPTURE=sck` (or
+`--loopback sck`); both run inside the engine to exclude its own playback. Capture failures
+report the permission/device issue rather than falling back to a feedback-prone loopback.
+`VOZTRAD_LANG=es` selects Spanish for new platform status messages.
+
+Record **your own voice** and select the reference:
+
+```sh
+.venv/bin/python -m voztrad voice
+.venv/bin/python -m voztrad voice use en
+.venv/bin/python -m voztrad app --tts pocket
+.venv/bin/python scripts/macos/bench_models.py --voice models/voice/me.wav --repeat 10
+```
+
+The existing recording guide is in Spanish. Voice recordings and previews stay in ignored
+`models/voice/` and `out/`. No voice recording is required to use Piper as a fallback.
+
+For the optional refiner, install `llama-server` (`brew install llama.cpp`) or set
+`VOZTRAD_LLAMA_SERVER` to its executable, fetch the GGUF with `scripts/fetch_models.py`,
+and opt in with `--refine`. Both Mac profiles start with CPU int8 ASR/MT and no NVIDIA
+keep-alive. Refiner/MLX/Metal performance needs measurement on an accessible GPU; the
+Apple Silicon profile is provisional. `--no-refine` disables the refiner explicitly.
+
+Double-click `scripts/macos/Voztrad.command` in Finder after setup, or use the CLI above.
+The launcher holds an App Nap activity; a file lock prevents duplicate overlays, and the
+existing watchdog guards llama-server if the engine dies. TCC permissions may need to be
+granted again when changing the launcher/interpreter.
+
+For live synthetic tests, start the engine in one terminal and run this in another:
+
+```sh
+.venv/bin/python scripts/e2e_portable.py --direction A --rounds 3
+```
+
+The portable harness reports **engine event latency, not audible hardware onset**. Direction
+B injection requires a **second** virtual cable (for example BlackHole 16ch): run the engine
+with `--mic 'BlackHole 16ch' --cable 'BlackHole 2ch'`, then the harness with
+`--direction B --inject-output 'BlackHole 16ch'`. Never inject into the outgoing cable.
+
+Before relying on a real call:
+
+- [ ] Compare `tap` and `sck`: external call/test audio is captured; engine Spanish playback is absent.
+- [ ] Verify English reaches BlackHole/Teams and Spanish reaches only headphones.
+- [ ] Test physical F8 and overlay PTT with another app focused, then hands-free/interpreter modes.
+- [ ] Check overlay dragging, all Spaces and full-screen call windows.
+- [ ] Record your voice; measure Pocket first audio and check intelligibility/identity.
+- [ ] Measure live subtitle, Spanish headphone onset and virtual-mic onset p50/p95; test device changes.
+- [ ] Kill the engine during refiner inference and verify no llama-server remains.
 
 ### Linux (PipeWire / Wayland)
 

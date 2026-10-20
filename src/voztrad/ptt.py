@@ -6,5 +6,10 @@ import sys
 
 if sys.platform == "win32":
     from .ptt_win import PushToTalkKey  # noqa: F401
-else:
+elif sys.platform == "darwin":
+    from .ptt_mac import PushToTalkKey  # noqa: F401,E402
+elif sys.platform == "linux":
     from .ptt_linux import PushToTalkKey  # noqa: F401
+
+else:
+    raise RuntimeError(f"Unsupported platform: {sys.platform}")

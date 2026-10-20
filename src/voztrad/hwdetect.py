@@ -15,6 +15,8 @@ User flags always override the chosen profile (see __main__.cmd_run)."""
 from __future__ import annotations
 
 import os
+import json
+import platform
 import subprocess
 import sys
 
@@ -59,15 +61,33 @@ def _llama_server() -> str | None:
     return str(exe) if exe else None
 
 
+def _mac_chip() -> str:
+    try:
+        result = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"],
+                                capture_output=True, text=True, timeout=2)
+        if result.stdout.strip():
+            return result.stdout.strip()
+        # Restricted hosts may block sysctl; extract only chip metadata, never machine IDs.
+        result = subprocess.run(["system_profiler", "SPHardwareDataType", "-json"],
+                                capture_output=True, text=True, timeout=5)
+        info = json.loads(result.stdout)["SPHardwareDataType"][0]
+        return info.get("chip_type") or info.get("cpu_type") or platform.machine()
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, IndexError):
+        return platform.machine()
+
+
 def detect() -> dict:
-    gpu = _nvidia()
+    gpu = None if sys.platform == "darwin" else _nvidia()
     return {
         "platform": sys.platform,
         "gpu": gpu,
         "has_cuda": gpu is not None,
         "cpu_count": os.cpu_count() or 1,
         "ram_gb": _ram_gb(),
-        "audio_server": _audio_server(),
+        "audio_server": "Core Audio" if sys.platform == "darwin" else _audio_server(),
+        "machine": platform.machine(),
+        "chip": _mac_chip() if sys.platform == "darwin" else platform.processor(),
+        "unified_memory": sys.platform == "darwin" and platform.machine() == "arm64",
         "has_voice_ref": any(p.exists() for p in VOICE_REFS),
         "llama_server": _llama_server(),
     }
@@ -80,8 +100,18 @@ def choose_profile(hw: dict) -> dict:
     phrase after ~200 ms of silence instead of the 500 ms hangover (~250 ms less
     end-to-end, measured on Windows)."""
     notes: list[str] = []
-    linux = hw["platform"] != "win32"
+    linux = hw["platform"] == "linux"
     tts = "pocket" if hw["has_voice_ref"] else "piper"
+
+    if hw["platform"] == "darwin":
+        apple = hw.get("machine") == "arm64"
+        notes.append(f"macOS {'Apple Silicon' if apple else 'Intel'} ({hw.get('chip', 'unknown')}): "
+                     "CPU int8 baseline; benchmark CoreML before selecting acceleration.")
+        refine = False  # No Mac refiner latency/memory result has been validated yet.
+        notes.append("Refiner off until measured on this Mac; use --refine to evaluate llama-server.")
+        return {"asr": "parakeet", "parakeet_quant": "int8", "mt_compute_type": "int8",
+                "refine": refine, "smart_turn": True, "gpu_warm": False, "tts": tts,
+                "notes": notes}
 
     if not hw["has_cuda"]:
         notes.append("no NVIDIA GPU: everything on CPU (slow ASR, ~300 ms+). A GPU is recommended.")

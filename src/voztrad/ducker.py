@@ -7,5 +7,10 @@ import sys
 
 if sys.platform == "win32":
     from .ducker_win import Ducker  # noqa: F401
-else:
+elif sys.platform == "darwin":
+    from .ducker_mac import Ducker  # noqa: F401,E402
+elif sys.platform == "linux":
     from .ducker_linux import Ducker  # noqa: F401
+
+else:
+    raise RuntimeError(f"Unsupported platform: {sys.platform}")

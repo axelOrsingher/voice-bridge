@@ -3,8 +3,9 @@ playback backend is selected at import time:
 
 - Windows: WASAPI via PyAudioWPatch (audio_win.py)
 - Linux:   PipeWire via parec/pacat (audio_linux.py)
+- macOS:   Core Audio/ScreenCaptureKit + sounddevice (audio_mac.py)
 
-Both backends expose the same surface used by the engine:
+All backends expose the same surface used by the engine:
     PyAudio, Capture, CablePlayer, find_input, find_loopback, find_output
 """
 
@@ -54,6 +55,12 @@ class Framer:
 if sys.platform == "win32":
     from .audio_win import (  # noqa: F401,E402
         CablePlayer, Capture, PyAudio, find_default_output, find_input, find_loopback, find_output)
-else:
+elif sys.platform == "darwin":
+    from .audio_mac import (  # noqa: F401,E402
+        CablePlayer, Capture, PyAudio, find_default_output, find_input, find_loopback, find_output)
+elif sys.platform == "linux":
     from .audio_linux import (  # noqa: F401,E402
         CablePlayer, Capture, PyAudio, find_default_output, find_input, find_loopback, find_output)
+
+else:
+    raise RuntimeError(f"Unsupported platform: {sys.platform}")

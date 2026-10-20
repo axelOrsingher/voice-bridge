@@ -33,6 +33,7 @@ from .audio import (CablePlayer, Capture, Framer, PyAudio, find_default_output,
                     find_input, find_loopback, find_output)
 from .config import FRAME_MS, ROOT, SR, Config
 from .langid import detect
+from .i18n import text as message
 from .tempo import Wsola, rate_for_backlog
 from .mt import Translator
 from .transport import JsonLinesServer
@@ -140,7 +141,13 @@ class Engine:
         self.caps: dict[str, Capture] = {}
         self.listen_ok = False
         if cfg.enable_a:
-            self.caps["A"] = self._open_a_capture()
+            try:
+                self.caps["A"] = self._open_a_capture()
+            except (RuntimeError, OSError) as e:
+                self.listen_ok = False
+                cfg.enable_a = False
+                self._emit({"type": "status", "msg": message(
+                    f"Call capture unavailable: {e}", f"Captura de llamada no disponible: {e}")})
             if cfg.listen and self.listen_ok:
                 from .ducker import Ducker
                 from .tts import Piper
@@ -150,14 +157,32 @@ class Engine:
                 self.listen_q: queue.Queue = queue.Queue()
                 self.listen_results: list[float] = []
                 self._listen_until = 0.0
-                self._emit({"type": "status", "msg": f"escucha en castellano -> {self.listen_player.device['name']}"
-                            f" (Teams al {round(cfg.listen_duck * 100)}% mientras suena)"})
+                duck_info = (f"call volume {round(cfg.listen_duck * 100)}%"
+                             if getattr(self.ducker, "available", True) else message(
+                                 "per-app ducking unavailable", "atenuación por app no disponible"))
+                self._emit({"type": "status", "msg": message(
+                    f"Spanish listen-back -> {self.listen_player.device['name']} ({duck_info})",
+                    f"Escucha en castellano -> {self.listen_player.device['name']} ({duck_info})")})
         if cfg.enable_b:
-            self.caps["B"] = Capture(self.pa, find_input(self.pa, cfg.mic))
-            self.player = CablePlayer(self.pa, find_output(self.pa, cfg.cable))
+            try:
+                # Resolve the virtual output before opening microphone capture.
+                self.player = CablePlayer(self.pa, find_output(self.pa, cfg.cable))
+                self.caps["B"] = Capture(self.pa, find_input(self.pa, cfg.mic))
+            except (RuntimeError, OSError) as e:
+                cfg.enable_b = False
+                if hasattr(self, "player"):
+                    self.player.close()
+                    del self.player
+                self._emit({"type": "status", "msg": message(
+                    f"Microphone translation unavailable: {e}", f"Traducción del micrófono no disponible: {e}")})
+        if cfg.enable_b:
             from .ptt import PushToTalkKey
             self.ptt = PushToTalkKey(cfg.ptt_key, on_change=lambda down: self._emit(
                 {"type": "ptt", "down": down}, quiet=True))
+            if not getattr(self.ptt, "available", True):
+                self._emit({"type": "status", "msg": message(
+                    "Global PTT unavailable: grant Accessibility/Input Monitoring and restart; the overlay button remains available.",
+                    "PTT global no disponible: habilitá Accesibilidad/Monitoreo de entrada y reiniciá; el botón del overlay sigue disponible.")})
         for d, c in self.caps.items():
             self._emit({"type": "status", "msg": f"{d}: {c.device['name']} {c.rate} Hz x{c.channels}"})
         if cfg.enable_b:
@@ -165,9 +190,9 @@ class Engine:
                         + (f" (tecla {cfg.ptt_key})" if cfg.b_mode == "ptt" else "")})
 
     def _open_a_capture(self):
-        """Loopback de todo el sistema EXCEPTO este proceso: así la traducción al castellano que
-        suena en los auriculares no vuelve a entrar por la dirección A."""
-        if sys.platform != "win32":
+        """Capture call audio with engine playback excluded before enabling listen-back."""
+        if sys.platform in ("linux", "darwin"):
+            # Both native backends exclude engine playback. macOS uses an in-process tap.
             # PipeWire: A captures the voztrad_calls monitor; our Spanish TTS goes to the
             # real output (not voztrad_calls), so it is never re-captured -> listen is safe.
             self.listen_ok = True
@@ -185,6 +210,12 @@ class Engine:
 
     # ---------------------------------------------------------------- hilos
     def run(self):
+        if not self.caps:
+            self._emit({"type": "status", "msg": message(
+                "No audio direction is available. Check devices and permissions, then restart.",
+                "No hay direcciones de audio disponibles. Revisá dispositivos y permisos y reiniciá.")})
+            self.close()
+            return
         threads = [threading.Thread(target=self._proc, args=(d,), name=f"proc-{d}", daemon=True)
                    for d in self.caps]
         threads += [threading.Thread(target=f, name=n, daemon=True)
@@ -461,7 +492,9 @@ class Engine:
                 "enable_a": self.cfg.enable_a, "enable_b": self.cfg.enable_b,
                 "hangover_ms": self.cfg.seg.hangover_ms,
                 "listen": bool(self.cfg.listen and getattr(self, "listen_ok", False)),
-                "listen_available": bool(getattr(self, "listen_ok", False))}
+                "listen_available": bool(getattr(self, "listen_ok", False)),
+                "mic": getattr(self, "caps", {}).get("B").device["name"] if "B" in getattr(self, "caps", {}) else None,
+                "virtual_output": self.player.device["name"] if hasattr(self, "player") else None}
 
     def _on_command(self, cmd: dict):
         c = cmd["cmd"]
@@ -490,9 +523,17 @@ class Engine:
             except OSError:
                 pass
         if hasattr(self, "ducker"):
-            self.ducker.restore_now()  # nunca dejar Teams bajito
+            self.ducker.restore_now()  # Always restore the call volume on exit.
         if getattr(self, "refiner", None):
             self.refiner.close()
+        for name in ("player", "listen_player"):
+            player = getattr(self, name, None)
+            if player:
+                player.close()
+        if hasattr(self, "ptt") and hasattr(self.ptt, "close"):
+            self.ptt.close()
+        if hasattr(self, "pa"):
+            self.pa.terminate()
         print(summary(self.results))
         lr = getattr(self, "listen_results", [])
         if lr:

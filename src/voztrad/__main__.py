@@ -52,7 +52,7 @@ def cmd_run(a):
                  gpu_warm=prof.get("gpu_warm", base.gpu_warm) and not a.no_gpu_warm,
                  tts=a.tts or prof.get("tts", "piper"),
                  voice_ref=Path(a.voice) if a.voice else None, listen=not a.no_listen,
-                 refine=prof.get("refine", base.refine) and not a.no_refine,
+                 refine=prof.get("refine", base.refine) if a.refine is None else a.refine,
                  smart_turn=prof.get("smart_turn", base.smart_turn) and not a.no_smart_turn)
     if a.listen_voice:
         cfg.listen_voice = Path(a.listen_voice)
@@ -108,10 +108,22 @@ _mutex = None
 
 
 def _single_instance(name: str) -> bool:
-    """Mutex con nombre de Windows: False si otra instancia ya lo tiene."""
+    """Hold a named Windows mutex or a per-user POSIX file lock for this process."""
     global _mutex
-    if sys.platform != "win32":
+    if sys.platform in ("linux", "darwin"):
+        import fcntl
+        import tempfile
+        path = Path(tempfile.gettempdir()) / f"{name}-{os.getuid()}.lock"
+        fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            return False
+        _mutex = os.fdopen(fd, "w")
         return True
+    if sys.platform != "win32":
+        raise RuntimeError(f"Unsupported platform: {sys.platform}")
     import ctypes
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     k32.CreateMutexW.restype = ctypes.c_void_p
@@ -150,7 +162,9 @@ def cmd_app(a):
     sys.exit(code)
 
 
-def _vram() -> int:
+def _vram() -> int | None:
+    if sys.platform == "darwin":
+        return None  # Unified/system RAM is not NVIDIA VRAM.
     out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
                          capture_output=True, text=True).stdout
     return int(out.strip().splitlines()[0])
@@ -185,8 +199,10 @@ def cmd_bench(a):
         base = _vram()
         t = time.perf_counter()
         model = asr_mod.load(kind, parakeet_quant=a.parakeet_quant)
-        load_s, vram = time.perf_counter() - t, _vram() - base
-        print(f"\n### {model.name}  (carga {load_s:.1f}s, VRAM +{vram} MiB)")
+        load_s, used = time.perf_counter() - t, _vram()
+        vram = used - base if used is not None and base is not None else None
+        memory = f"VRAM +{vram} MiB" if vram is not None else "GPU memory not measured"
+        print(f"\n### {model.name}  (load {load_s:.1f}s, {memory})")
         rows = []
         for p, lang, x in clips:
             ms = []
@@ -272,8 +288,8 @@ def main():
     d.set_defaults(fn=cmd_detect)
 
     a = ap.parse_args()
-    from .winperf import disable_throttling
-    disable_throttling()
+    from .runtime import keep_awake
+    keep_awake()
     a.fn(a)
 
 
@@ -301,8 +317,8 @@ def _run_args(r):
     r.add_argument("--tts", choices=["pocket", "piper"], default=None,
                    help="pocket = tu voz clonada (models/voice/me.wav); piper = voz genérica (default: auto)")
     r.add_argument("--voice", default=None, help="wav de referencia para clonar (default models/voice/me.wav)")
-    r.add_argument("--no-refine", action="store_true",
-                   help="sin TranslateGemma (solo traducción rápida; libera ~2,6 GB de VRAM)")
+    r.add_argument("--refine", action=argparse.BooleanOptionalAction, default=None,
+                   help="enable/disable TranslateGemma; default follows the hardware profile")
     r.add_argument("--no-listen", action="store_true", help="no reproducir la traducción al castellano")
     r.add_argument("--no-smart-turn", action="store_true", help="disable Smart Turn end-of-turn detection")
     r.add_argument("--listen-voice", default=None, help="voz Piper para el castellano (default es_MX-ald-medium)")

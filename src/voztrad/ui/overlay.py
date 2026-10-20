@@ -496,6 +496,8 @@ def main(host="127.0.0.1", port=8765) -> int:
     app.setFont(QFont(FONT, 10))
     w = Overlay(host, port)
     w.show()
+    from ..runtime import configure_overlay
+    configure_overlay(w)
     # Pruebas: VOZTRAD_UI_SNAPSHOT="ruta.png;segundos" guarda una captura y sale.
     snap = __import__("os").environ.get("VOZTRAD_UI_SNAPSHOT")
     if snap:

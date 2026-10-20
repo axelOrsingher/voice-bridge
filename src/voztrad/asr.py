@@ -1,13 +1,13 @@
-"""Backends de ASR enchufables. Ambos reciben float32 16 kHz mono.
+"""ASR backends receiving mono float32 at 16 kHz.
 
-- whisper: faster-whisper (CTranslate2, float16). Padea SIEMPRE a 30 s.
-- parakeet: Parakeet TDT 0.6B v3 vía onnx-asr (ONNX, GPU). Procesa solo el
-  audio que hay. Detecta el idioma solo (no admite forzarlo).
+Windows/Linux retain their CUDA settings. macOS uses CPU int8 Whisper or Parakeet,
+with an optional CoreML provider for measured experiments.
 """
 
 from __future__ import annotations
 
 from typing import Protocol
+import sys
 
 import numpy as np
 
@@ -25,7 +25,10 @@ class WhisperASR:
     def __init__(self, model: str = "large-v3-turbo"):
         from faster_whisper import WhisperModel
         self.name = f"whisper-{model}"
-        self.model = WhisperModel(model, device="cuda", compute_type="float16")
+        if sys.platform == "darwin":
+            self.model = WhisperModel(model, device="cpu", compute_type="int8")
+        else:
+            self.model = WhisperModel(model, device="cuda", compute_type="float16")
 
     def transcribe(self, audio: np.ndarray, lang: str) -> str:
         segments, _ = self.model.transcribe(
@@ -55,9 +58,19 @@ class ParakeetASR:
         else:
             self.name = f"parakeet-tdt-0.6b-v3-{quantization or 'fp32'}"
         cuda = ("CUDAExecutionProvider", {"arena_extend_strategy": "kSameAsRequested"})
+        providers = [cuda, "CPUExecutionProvider"]
+        platform_options = {}
+        if sys.platform == "darwin":
+            from .asr_mac import providers as mac_providers
+            providers = mac_providers(ort.get_available_providers())
+            # CoreML's Conv-STFT preprocessing fails graph initialization on this Intel Mac.
+            # Keep NumPy preprocessing/resampling on CPU; only ASR graphs use the chosen EP.
+            cpu_options = {"providers": ["CPUExecutionProvider"], "sess_options": so}
+            platform_options = {"preprocessor_config": dict(cpu_options),
+                                "resampler_config": dict(cpu_options)}
         self.model = onnx_asr.load_model(
             "nemo-parakeet-tdt-0.6b-v3", path=path, quantization=quantization, sess_options=so,
-            providers=[cuda, "CPUExecutionProvider"])
+            providers=providers, **platform_options)
 
     def transcribe(self, audio: np.ndarray, lang: str) -> str:
         text = str(self.model.recognize(audio, sample_rate=SR)).strip()

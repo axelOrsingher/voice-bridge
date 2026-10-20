@@ -5,6 +5,7 @@ Uso: python scripts/fetch_models.py
 """
 
 import urllib.request
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +32,10 @@ FILES = {
 }
 
 for rel, url in FILES.items():
+    if "--test-only" in sys.argv and not any(n in rel for n in ("silero_vad", "smart-turn")):
+        continue
+    if "--skip-refiner" in sys.argv and "translategemma" in rel:
+        continue
     dst = ROOT / rel
     if dst.exists():
         print(f"ok    {rel}")
@@ -42,7 +47,12 @@ for rel, url in FILES.items():
 # llama.cpp (binarios oficiales CUDA 12.4) para TranslateGemma
 LLAMA = Path.home() / "tools" / "llama.cpp-b11433-cuda12.4"
 REL = "https://github.com/ggml-org/llama.cpp/releases/download/b11433/"
-if not (LLAMA / "llama-server.exe").exists():
+if "--test-only" in sys.argv:
+    sys.exit(0)
+
+if sys.platform != "win32":
+    print("Install llama-server separately (macOS: brew install llama.cpp), or set VOZTRAD_LLAMA_SERVER.")
+elif not (LLAMA / "llama-server.exe").exists():
     import zipfile
     LLAMA.mkdir(parents=True, exist_ok=True)
     for z in ("llama-b11433-bin-win-cuda-12.4-x64.zip", "cudart-llama-bin-win-cuda-12.4-x64.zip"):
